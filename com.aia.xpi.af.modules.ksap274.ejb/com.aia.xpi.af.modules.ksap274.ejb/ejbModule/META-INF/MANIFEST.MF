@@ -1,0 +1,3 @@
+Manifest-Version: 1.0
+Class-Path: com.aia.xpi.af.modules.ksap274.ejbClient.jar
+
