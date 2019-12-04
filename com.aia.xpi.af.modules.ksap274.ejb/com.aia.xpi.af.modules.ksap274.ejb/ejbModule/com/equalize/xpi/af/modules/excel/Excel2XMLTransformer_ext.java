@@ -17,6 +17,13 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.formula.*;
+
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFEvaluationWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFEvaluationWorkbook;
+
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 
@@ -44,17 +51,25 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 	private String documentNamespace;
 	private String formatting;
 	private boolean evaluateFormulas;
+	private boolean evaluateFormulasExt;
 	private String emptyCellOutput;
 	private String emptyCellDefaultValue;
 	private int rowOffset;
 	private int columnOffset;
 	private boolean skipEmptyRows;
+	private String skipRowsWithEmptyCol = "";
+	private int skipRowsWithEmptyColHits;
 	private int indentFactor;
 	private String isOneLiner = "";
 	private String oneLinerFieldName = "";
 	private String[] columnNames;
 	private int noOfRows = 0;
 	private ArrayList<String[]> sheetContents;
+	private FormulaEvaluator evaluator;
+	private DataFormatter formatter = new DataFormatter(true);
+	private EvaluationWorkbook evalWorkbook = null;
+	private EvaluationSheet esheet;
+	private EvaluationCell ecell;
 
 	// Constructor
 	public Excel2XMLTransformer_ext(Message msg, ParameterHelper param, AuditLogHelper audit,
@@ -87,6 +102,21 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 		if (!this.skipEmptyRows) {
 			this.audit.addLog(AuditLogStatus.SUCCESS, "Empty rows will be included");
 		}
+
+		this.skipRowsWithEmptyCol = this.param.getParameter("skipRowsWithEmptyCol");
+		this.skipRowsWithEmptyColHits = this.param.getIntParameter("skipRowsWithEmptyColHits");
+		if (this.skipRowsWithEmptyCol == null) {
+			this.skipRowsWithEmptyCol = "";
+		}
+
+		if (!this.skipRowsWithEmptyCol.equals("")
+				&& (String.valueOf(this.skipRowsWithEmptyColHits).equals("") || this.skipRowsWithEmptyColHits == 0)) {
+			throw new ModuleException("Parameter skipRowsWithEmptyColHits is missing for skipRowsWithEmptyCol");
+		} else {
+			this.audit.addLog(AuditLogStatus.SUCCESS, "Rows with " + this.skipRowsWithEmptyColHits + " empty columns "
+					+ this.skipRowsWithEmptyCol + " will be skipped");
+		}
+
 		this.rowOffset = this.param.getIntParameter("rowOffset");
 		this.columnOffset = this.param.getIntParameter("columnOffset");
 
@@ -144,6 +174,12 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 			this.audit.addLog(AuditLogStatus.SUCCESS,
 					"Formulas will not be evaluated, formula logic displayed instead");
 		}
+
+		this.evaluateFormulasExt = this.param.getBoolParameter("evaluateFormulasExt", "N", false);
+		if (this.evaluateFormulasExt) {
+			this.audit.addLog(AuditLogStatus.SUCCESS, "Ext Formulas will be evaluated");
+		}
+
 		this.emptyCellOutput = this.param.getParameter("emptyCellOutput", "suppress", false);
 		this.param.checkParamValidValues("emptyCellOutput", "suppress,defaultValue");
 		if (this.emptyCellOutput.equalsIgnoreCase("defaultValue")) {
@@ -166,6 +202,15 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 		} catch (Exception e) {
 			throw new ModuleException(e.getMessage(), e);
 		}
+
+		if (wb instanceof HSSFWorkbook) {
+			evalWorkbook = HSSFEvaluationWorkbook.create((HSSFWorkbook) wb);
+		} else if (wb instanceof XSSFWorkbook) {
+			evalWorkbook = XSSFEvaluationWorkbook.create((XSSFWorkbook) wb);
+		} else {
+			throw new IllegalStateException();
+		}
+
 		// Get the sheet
 		Sheet sheet = retrieveSheet(wb, this.sheetName, this.sheetIndex);
 		// Get the number of rows and columns
@@ -175,7 +220,7 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 		}
 
 		this.noOfRows = sheet.getLastRowNum() + 1;
-
+		this.audit.addLog(AuditLogStatus.SUCCESS, "Total Rows to be processed " + this.noOfRows);
 		// Get the column names from header
 		if (this.processFieldNames.equalsIgnoreCase("fromFile")) {
 			this.columnNames = retrieveColumnNamesFromFileHeader(sheet, this.columnCount);
@@ -244,6 +289,7 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 							} else {
 								fieldName = "Column" + Integer.toString(col + 1);
 							}
+
 							// Add fields of the row
 							addElementToNode(outDoc, outRecord, fieldName, rowContent[col]);
 						}
@@ -269,14 +315,18 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 
 	private Sheet retrieveSheet(Workbook wb, String name, int sheetIndex) throws ModuleException {
 		Sheet sheet = null;
+		int sheetIndex2;
 		if (name != null) {
 			this.audit.addLog(AuditLogStatus.SUCCESS, "Accessing sheet " + name);
 			sheet = wb.getSheet(name);
+			sheetIndex2 = wb.getSheetIndex(name);
+			esheet = evalWorkbook.getSheet(sheetIndex2);
 			if (sheet == null) {
 				throw new ModuleException("Sheet " + name + " not found");
 			}
 		} else {
 			sheet = wb.getSheetAt(sheetIndex);
+			esheet = evalWorkbook.getSheet(sheetIndex);
 			this.audit.addLog(AuditLogStatus.SUCCESS,
 					"Accessing sheet " + sheet.getSheetName() + " at index " + sheetIndex);
 		}
@@ -309,7 +359,18 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 					throw new ModuleException("Empty column name found");
 				}
 			}
-			headerColumns[col] = cell.getStringCellValue();
+
+			if (!isOneLiner.equals("")) {
+				if (cell == null) {
+					headerColumns[col] = "";
+				} else {
+					headerColumns[col] = cell.getStringCellValue();
+				}
+
+			} else {
+				headerColumns[col] = cell.getStringCellValue();
+			}
+
 			String fieldName = headerColumns[col].replaceAll("\\s+", "");
 
 			// ensure only valid chars are included in the XML element name
@@ -329,6 +390,16 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 				}
 			} else {
 				headerColumns[col] = fieldName;
+				// this.audit.addLog(AuditLogStatus.SUCCESS, "Column " + col + "
+				// is " + headerColumns[col]);
+				// if (headerColumns[col].equals("") || headerColumns[col] ==
+				// null)
+				// {
+				// headerColumns[col] = "aaa";
+				// }
+				// this.audit.addLog(AuditLogStatus.SUCCESS, "xxx Column " + col
+				// + " is " + headerColumns[col]);
+
 			}
 		}
 		return headerColumns;
@@ -344,22 +415,73 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 		this.audit.addLog(AuditLogStatus.SUCCESS, "Start processing from row " + Integer.toString(startRow + 1));
 		this.audit.addLog(AuditLogStatus.SUCCESS, "Start processing from column " + Integer.toString(startCol + 1));
 		ArrayList<String[]> contents = new ArrayList<String[]>();
+		Cell cell;
 		int lastColumn = startCol + noOfColumns;
+		String[] rowContent;
+		String[] targetColumns;
+		Row row;
+		int emptyCol = 0;
+		boolean contentFound = false;
 		// Go through each row
 		for (int rowNo = startRow; rowNo < noOfRows; rowNo++) {
-			Row row = sheet.getRow(rowNo);
-			boolean contentFound = false;
+			// this.audit.addLog(AuditLogStatus.SUCCESS, "Curr Row " + rowNo);
+			row = sheet.getRow(rowNo);
+			contentFound = false;
 			if (row != null) {
-				String[] rowContent = new String[noOfColumns];
+				rowContent = new String[noOfColumns];
 				// Go through each column cell of the current row
+				emptyCol = 0;
 				for (int colNo = startCol; colNo < lastColumn; colNo++) {
-					Cell cell = row.getCell(colNo);
-					if (cell != null) {
+					// this.audit.addLog(AuditLogStatus.SUCCESS, "at col "
+					// + colNo);
+					cell = row.getCell(colNo);
+					
+					
+					
+					//if (cell != null) {
+
 						rowContent[colNo - startCol] = retrieveCellContent(cell, wb, evaluateFormulas, formatting);
-						if (rowContent[colNo - startCol] != null) {
-							contentFound = true;
+
+						// this.audit.addLog(AuditLogStatus.SUCCESS, "Curr col "
+						// + colNo + " content " + rowContent[colNo -
+						// startCol]);
+
+						if (!this.skipRowsWithEmptyCol.equals("")) {
+							targetColumns = this.skipRowsWithEmptyCol.split(",");
+							for (int tg = 0; tg < targetColumns.length; tg++) {
+
+								if (colNo == Integer.parseInt(targetColumns[tg])
+										&& (rowContent[colNo - startCol] == null || rowContent[colNo - startCol] == "")) {
+									emptyCol++;
+									
+										//this.audit.addLog(AuditLogStatus.SUCCESS,
+										//		"empty Col" + colNo + " " + "total empty " + emptyCol);
+									
+								}
+							}
 						}
-					}
+						if (rowContent[colNo - startCol] == null) {
+							rowContent[colNo - startCol] = " ";
+						} else {
+							if (rowContent[colNo - startCol].indexOf(',') > -1) {
+								rowContent[colNo - startCol] = '"' + rowContent[colNo - startCol] + '"';
+							}
+						}
+						// this.audit.addLog(AuditLogStatus.SUCCESS, "Curr col
+						// end" + colNo);
+						// if (rowContent[colNo - startCol] != null) {
+						contentFound = true;
+						// }
+
+						if (emptyCol == this.skipRowsWithEmptyColHits && !this.skipRowsWithEmptyCol.equals("")) {
+							if (debug) {
+								this.audit.addLog(AuditLogStatus.SUCCESS, "no further process due to empty Cols");
+							}
+							contentFound = false;
+							break;
+						}
+
+					//}
 					if (debug) {
 						this.audit.addLog(AuditLogStatus.SUCCESS, "DEBUG Cell " + Integer.toString(rowNo + 1) + ":"
 								+ Integer.toString(colNo + 1) + " - " + rowContent[colNo]);
@@ -368,6 +490,7 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 				if (contentFound) {
 					contents.add(rowContent);
 				}
+				rowContent = null;
 			} else if (debug) {
 				this.audit.addLog(AuditLogStatus.SUCCESS, "DEBUG Row " + Integer.toString(rowNo + 1) + " empty");
 			}
@@ -375,9 +498,13 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 			if (!skipEmptyRows && !contentFound) {
 				contents.add(new String[noOfColumns]);
 			}
+			// this.audit.addLog(AuditLogStatus.SUCCESS, "Curr Row End" +
+			// rowNo);
 
 		}
-		if (contents.size() == 0) {
+		if (contents.size() == 0)
+
+		{
 			throw new ModuleException("No rows with valid contents found");
 		} else {
 			return contents;
@@ -385,16 +512,60 @@ public class Excel2XMLTransformer_ext extends AbstractModuleConverter {
 	}
 
 	private String retrieveCellContent(Cell cell, Workbook wb, boolean evaluateFormulas, String formatting) {
-		FormulaEvaluator evaluator = wb.getCreationHelper().createFormulaEvaluator();
-		DataFormatter formatter = new DataFormatter(true);
+		evaluator = wb.getCreationHelper().createFormulaEvaluator();
 		String cellContent = null;
+		String cellContentTmp = null;
+		
+		if (cell == null)
+		{
+			return "";
+		}
+		
 		int cellType = cell.getCellType();
+		//this.audit.addLog(AuditLogStatus.SUCCESS,
+		//		"cell pos " + cell.getRowIndex() + " " + cell.getColumnIndex() + " type " + cellType);
 		switch (cellType) {
 		case Cell.CELL_TYPE_BLANK:
 			break;
 		case Cell.CELL_TYPE_FORMULA:
 			if (evaluateFormulas) {
-				cellContent = formatter.formatCellValue(cell, evaluator);
+				if (!this.evaluateFormulasExt) {
+					cellContent = formatter.formatCellValue(cell, evaluator);
+				} else {
+
+					ecell = esheet.getCell(cell.getRowIndex(), cell.getColumnIndex());
+					// cellContent = formatter.formatCellValue(ecell,
+					// evaluator);
+					//this.audit.addLog(AuditLogStatus.SUCCESS, "Eval Ext " + ecell.getCellType());
+					try {
+						cellContentTmp = Double.toString(ecell.getNumericCellValue());
+						cellContent = cellContentTmp;
+					} catch (Exception e) {
+
+					}
+
+					
+					if (cellContent == null) {
+						try {
+							cellContentTmp = ecell.getStringCellValue();
+							cellContent = cellContentTmp;
+						} catch (Exception e) {
+
+						}
+					}
+					
+					if (cellContent == null) {
+						try {
+							cellContentTmp = Boolean.toString(ecell.getBooleanCellValue());
+							cellContent = cellContentTmp;
+						} catch (Exception e) {
+
+						}
+					}
+
+					
+
+				}
 			} else {
 				// Display the formula instead
 				cellContent = cell.getCellFormula();
