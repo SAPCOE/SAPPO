@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<n0:MT_JdbcQuery_response xmlns:n0="urn:aia.com/Jet/Structure">
+<StatementName_response>
+<response_1>
+	<row>
+		<request_id>R190904000003200</request_id>
+		<status>QUEUED FOR MAKER         </status>
+		<company_cd>5010</company_cd>
+		<currency>PHP</currency>
+		<due_dt>20191007</due_dt>
+		<planning_type>Q2</planning_type>
+		<house_bank>     </house_bank>
+		<bank_acct_id>     </bank_acct_id>
+		<total_req_amt>76500.00</total_req_amt>
+		<item_text>SUSPENSE CLEARING MATURI      </item_text>
+		<item_assignment>0428635880</item_assignment>
+	</row>
+	<row>
+		<request_id>R190904000003700</request_id>
+		<status>ENDORSED FOR APPROVAL    </status>
+		<company_cd>5011</company_cd>
+		<currency>USD</currency>
+		<due_dt>20191004</due_dt>
+		<planning_type>  </planning_type>
+		<house_bank></house_bank>
+		<bank_acct_id></bank_acct_id>
+		<total_req_amt>1000.00</total_req_amt>
+		<item_text>SUSPENSE CLEARING MATURI      </item_text>
+		<item_assignment>1001336757</item_assignment>
+	</row>
+	<update_count>2</update_count>
+</response_1>
+</StatementName_response>
+</n0:MT_JdbcQuery_response>
